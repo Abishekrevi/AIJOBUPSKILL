@@ -1,52 +1,47 @@
-import React, { useState, createContext, useContext } from 'react';
+import React, { useState, useContext, createContext } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import Coach from './pages/Coach';
-import Credentials from './pages/Credentials';
-import Signal from './pages/Signal';
-import Employers from './pages/Employers';
-import HRDashboard from './pages/HRDashboard';
-import Onboarding from './pages/Onboarding';
-import Login from './pages/Login';
-import Profile from './pages/Profile';
-import ISAPage from './pages/ISAPage';
-import GigMarketplace from './pages/GigMarketplace';
-import AdminPanel from './pages/AdminPanel';
-import LandingPage from './pages/LandingPage';
 
-export const WorkerContext = createContext(null);
+import Dashboard from './pages/Dashboard';
+import Credentials from './pages/Credentials';
+import AICoach from './pages/AICoach';
+import Employers from './pages/Employers';
+import Gigs from './pages/Gigs';
+import Profile from './pages/Profile';
+import AIInsights from './pages/AIInsights';
+import Analytics from './pages/Analytics';
+import Landing from './pages/Landing';
+
+const WorkerContext = createContext();
 export const useWorker = () => useContext(WorkerContext);
 
 export default function App() {
-  const [worker, setWorker] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pp_worker')); } catch { return null; }
-  });
-  const [hrCompany, setHRCompany] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pp_hr')); } catch { return null; }
-  });
+  const [worker, setWorker] = useState(null);
+  const [hrCompany, setHRCompany] = useState(null);
+  const [view, setView] = useState('worker');
 
-  const saveWorker = (w) => { setWorker(w); localStorage.setItem('pp_worker', JSON.stringify(w)); };
-  const saveHR = (c) => { setHRCompany(c); localStorage.setItem('pp_hr', JSON.stringify(c)); };
-  const logout = () => { setWorker(null); setHRCompany(null); localStorage.removeItem('pp_worker'); localStorage.removeItem('pp_hr'); };
+  const logout = () => {
+    setWorker(null);
+    setHRCompany(null);
+    setView('worker');
+  };
 
   return (
-    <WorkerContext.Provider value={{ worker, setWorker: saveWorker, hrCompany, setHRCompany: saveHR, logout }}>
+    <WorkerContext.Provider value={{ worker, setWorker, hrCompany, setHRCompany, logout }}>
       <BrowserRouter>
         <Routes>
-          <Route path="/landing" element={<LandingPage />} />
-          <Route path="/onboarding" element={<Onboarding />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/isa" element={worker ? <Layout><ISAPage /></Layout> : <Navigate to="/login" />} />
-          <Route path="/profile" element={worker ? <Layout><Profile /></Layout> : <Navigate to="/login" />} />
-          <Route path="/gigs" element={worker ? <Layout><GigMarketplace /></Layout> : <Navigate to="/login" />} />
-          <Route path="/admin" element={<Layout view="admin"><AdminPanel /></Layout>} />
-          <Route path="/hr" element={hrCompany || worker ? <Layout view="hr"><HRDashboard /></Layout> : <Navigate to="/login" />} />
-          <Route path="/" element={worker ? <Layout><Dashboard /></Layout> : <LandingPage />} />
-          <Route path="/coach" element={worker ? <Layout><Coach /></Layout> : <Navigate to="/login" />} />
-          <Route path="/credentials" element={worker ? <Layout><Credentials /></Layout> : <Navigate to="/login" />} />
-          <Route path="/signal" element={worker ? <Layout><Signal /></Layout> : <Navigate to="/login" />} />
-          <Route path="/employers" element={worker ? <Layout><Employers /></Layout> : <Navigate to="/login" />} />
+          <Route path="/landing" element={<Landing />} />
+          
+          <Route path="/" element={worker ? <Layout view="worker"><Dashboard /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/credentials" element={worker ? <Layout view="worker"><Credentials /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/coach" element={worker ? <Layout view="worker"><AICoach /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/insights" element={worker ? <Layout view="worker"><AIInsights /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/analytics" element={worker ? <Layout view="worker"><Analytics /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/employers" element={worker ? <Layout view="worker"><Employers /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/gigs" element={worker ? <Layout view="worker"><Gigs /></Layout> : <Navigate to="/landing" />} />
+          <Route path="/profile" element={worker ? <Layout view="worker"><Profile /></Layout> : <Navigate to="/landing" />} />
+          
+          <Route path="*" element={<Navigate to="/landing" />} />
         </Routes>
       </BrowserRouter>
     </WorkerContext.Provider>
