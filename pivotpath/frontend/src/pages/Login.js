@@ -17,11 +17,14 @@ export default function Login() {
     try {
       if (tab === 'worker') {
         const res = await authAPI.workerLogin(email, password);
-        setWorker(res.data);
+        // New auth response: { token, worker }
+        const worker = res.data.worker || res.data;
+        setWorker(worker);
         navigate('/');
       } else {
         const res = await authAPI.hrLogin(email, password);
-        setHRCompany(res.data);
+        const company = res.data.company || res.data;
+        setHRCompany(company);
         navigate('/hr');
       }
     } catch (e) {
