@@ -21,11 +21,11 @@ export default function Dashboard() {
     coachAPI.roadmap(worker.id).then(r => {
       setRoadmap(r.data);
       if (r.data?.career_path) setCareerPath(r.data.career_path);
-    }).catch(() => { });
+    }).catch(() => {});
 
-    signalAPI.top(4).then(r => setSignals(r.data)).catch(() => { });
-    credentialAPI.workerCredentials(worker.id).then(r => setEnrollments(r.data)).catch(() => { });
-    credentialAPI.recommended(worker.id).then(r => setRecommended(r.data)).catch(() => { });
+    signalAPI.top(4).then(r => setSignals(r.data)).catch(() => {});
+    credentialAPI.workerCredentials(worker.id).then(r => setEnrollments(r.data)).catch(() => {});
+    credentialAPI.recommended(worker.id).then(r => setRecommended(r.data)).catch(() => {});
 
     // Connect WebSocket for real-time notifications
     connectNotifications(worker.id, (msg) => {

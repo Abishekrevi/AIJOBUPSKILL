@@ -22,7 +22,7 @@ export default function Onboarding() {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   useEffect(() => {
-    coachAPI.allRoles().then(r => setAvailableRoles(r.data?.roles || [])).catch(() => { });
+    coachAPI.allRoles().then(r => setAvailableRoles(r.data?.roles || [])).catch(() => {});
   }, []);
 
   useEffect(() => {

@@ -1,261 +1,119 @@
 """
-PivotPath Auth Router — Production Grade
-Implements:
-  1. JWT blacklist logout — instant token revocation
-  2. Refresh token rotation — 15min access + 7day refresh
-  4. RBAC scopes on all tokens
-  5. IP geo anomaly detection on login
+Audit Log — append-only tamper-evident event log.
+Each entry contains a hash of the previous entry, forming a chain.
 """
+import hashlib
+import json
+import uuid
+from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import Column, String, DateTime, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel, EmailStr, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from datetime import datetime, timedelta
-import uuid
 
-from database import get_db, Worker, HRCompany, RefreshToken
-from security import (
-    hash_password, verify_password,
-    create_access_token, create_refresh_token, decode_token,
-    blacklist_token, is_blacklisted,
-    check_login_anomaly,
-    REFRESH_TOKEN_EXPIRE_DAYS,
-    get_current_worker,
-)
-from audit_log import log_event, AuditEvent
-
-router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
+from database import Base
 
 
-class WorkerLogin(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
-
-class HRLogin(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
-
-class SetPassword(BaseModel):
-    worker_id: str = Field(max_length=64)
-    password: str = Field(min_length=8, max_length=128)
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(String, primary_key=True)
+    event_type = Column(String, nullable=False)
+    actor_id = Column(String, nullable=True)
+    actor_role = Column(String, nullable=True)
+    payload = Column(Text, nullable=True)
+    ip_address = Column(String, nullable=True)
+    prev_hash = Column(String, nullable=False)
+    this_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ─── Worker login ─────────────────────────────────────────────────────────────
-@router.post("/worker/login")
-@limiter.limit("5/minute")
-async def worker_login(request: Request, data: WorkerLogin, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Worker).where(Worker.email == data.email))
-    worker = result.scalar()
-
-    # Timing-safe: always run bcrypt even for unknown emails
-    dummy = "$2b$12$dummyhashtopreventtimingattacks1234567890123456"
-    stored = worker.password_hash if (worker and worker.password_hash) else dummy
-    valid = verify_password(data.password, stored) if (worker and worker.password_hash) else False
-
-    if not worker or not valid:
-        await log_event(db, AuditEvent.LOGIN_FAILED,
-                        payload={"email": data.email},
-                        ip_address=request.client.host)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    # Upgrade 5: IP geo anomaly detection
-    client_ip = request.client.host
-    anomaly = await check_login_anomaly(worker.id, client_ip, db)
-    if anomaly.get("anomaly"):
-        await log_event(db, "LOGIN_GEO_ANOMALY",
-                        actor_id=worker.id, actor_role="worker",
-                        payload=anomaly, ip_address=client_ip)
-
-    # Upgrade 1+4: access token with scopes + jti
-    access_token = create_access_token(subject=worker.id, role="worker")
-    # Upgrade 2: refresh token
-    refresh_token = create_refresh_token(subject=worker.id, role="worker")
-    refresh_payload = decode_token(refresh_token)
-
-    # Store refresh token in DB
-    rt = RefreshToken(
-        id=refresh_payload["jti"],
-        worker_id=worker.id,
-        role="worker",
-        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-        ip_address=client_ip,
-    )
-    db.add(rt)
-    await db.commit()
-
-    await log_event(db, AuditEvent.LOGIN_SUCCESS,
-                    actor_id=worker.id, actor_role="worker",
-                    ip_address=client_ip,
-                    payload={"location": anomaly.get("location", {})})
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "expires_in": 900,  # 15 minutes in seconds
-        "worker": worker,
-        "geo_anomaly": anomaly.get("anomaly", False),
-    }
+class AuditEvent:
+    # Auth events
+    LOGIN_SUCCESS = "LOGIN_SUCCESS"
+    LOGIN_FAILED = "LOGIN_FAILED"
+    LOGIN_GEO_ANOMALY = "LOGIN_GEO_ANOMALY"
+    LOGOUT = "LOGOUT"
+    PASSWORD_CHANGED = "PASSWORD_CHANGED"
+    REFRESH_TOKEN_REUSE_ATTACK = "REFRESH_TOKEN_REUSE_ATTACK"
+    # User lifecycle
+    WORKER_CREATED = "WORKER_CREATED"
+    PROFILE_UPDATED = "PROFILE_UPDATED"
+    HR_COMPANY_CREATED = "HR_COMPANY_CREATED"
+    # Business events
+    ISA_SIGNED = "ISA_SIGNED"
+    CREDENTIAL_ENROLLED = "CREDENTIAL_ENROLLED"
+    CREDENTIAL_COMPLETED = "CREDENTIAL_COMPLETED"
+    INTERVIEW_BOOKED = "INTERVIEW_BOOKED"
+    # Security events
+    SQL_INJECTION_ATTEMPT = "SQL_INJECTION_ATTEMPT"
+    RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+    INVALID_TOKEN = "INVALID_TOKEN"
+    # RAG/AI events
+    RAG_EVAL = "RAG_EVAL"
 
 
-# ─── Upgrade 2: Token refresh endpoint ───────────────────────────────────────
-@router.post("/refresh")
-@limiter.limit("10/minute")
-async def refresh_tokens(request: Request, data: RefreshRequest, db: AsyncSession = Depends(get_db)):
-    """Rotate refresh token — old one is revoked, new pair issued."""
-    try:
-        payload = decode_token(data.refresh_token)
-    except HTTPException:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    if payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Not a refresh token")
-
-    jti = payload.get("jti", "")
-
-    # Check DB record
-    result = await db.execute(select(RefreshToken).where(RefreshToken.id == jti))
-    rt = result.scalar()
-    if not rt or rt.revoked:
-        # Potential token reuse attack — revoke all tokens for this user
-        await log_event(db, "REFRESH_TOKEN_REUSE_ATTACK",
-                        actor_id=payload.get("sub"),
-                        payload={"jti": jti},
-                        ip_address=request.client.host)
-        raise HTTPException(status_code=401, detail="Refresh token already used — please log in again")
-
-    if rt.expires_at < datetime.utcnow():
-        raise HTTPException(status_code=401, detail="Refresh token expired")
-
-    # Revoke old refresh token
-    rt.revoked = True
-    await db.commit()
-
-    # Issue new token pair
-    subject = payload["sub"]
-    role = payload["role"]
-    new_access = create_access_token(subject=subject, role=role)
-    new_refresh = create_refresh_token(subject=subject, role=role)
-    new_rt_payload = decode_token(new_refresh)
-
-    new_rt = RefreshToken(
-        id=new_rt_payload["jti"],
-        worker_id=subject if role == "worker" else None,
-        hr_id=subject if role == "hr" else None,
-        role=role,
-        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-        ip_address=request.client.host,
-    )
-    db.add(new_rt)
-    await db.commit()
-
-    return {
-        "access_token": new_access,
-        "refresh_token": new_refresh,
-        "token_type": "bearer",
-        "expires_in": 900,
-    }
+def _compute_hash(prev_hash: str, payload: str) -> str:
+    return hashlib.sha256(f"{prev_hash}{payload}".encode()).hexdigest()
 
 
-# ─── Upgrade 1: Logout — blacklist the access token ──────────────────────────
-@router.post("/logout")
-async def logout(
-    request: Request,
-    current_worker: Worker = Depends(get_current_worker),
-    db: AsyncSession = Depends(get_db)
-):
-    """Instantly revoke the current access token via Redis blacklist."""
-    from fastapi.security import HTTPBearer
-    from fastapi import Request as FastAPIRequest
-    auth_header = request.headers.get("authorization", "")
-    token = auth_header.replace("Bearer ", "").replace("bearer ", "")
-    if token:
-        payload = decode_token(token)
-        jti = payload.get("jti", "")
-        if jti:
-            await blacklist_token(jti, ttl_seconds=86400)
-
-    # Also revoke all refresh tokens for this worker
+async def _get_last_hash(db: AsyncSession) -> str:
     result = await db.execute(
-        select(RefreshToken).where(
-            RefreshToken.worker_id == current_worker.id,
-            RefreshToken.revoked == False
+        select(AuditLog).order_by(AuditLog.created_at.desc()).limit(1)
+    )
+    last = result.scalar()
+    return last.this_hash if last else "GENESIS"
+
+
+async def log_event(
+    db: AsyncSession,
+    event_type: str,
+    actor_id: Optional[str] = None,
+    actor_role: Optional[str] = None,
+    payload: Optional[dict] = None,
+    ip_address: Optional[str] = None,
+):
+    """Append a new tamper-evident event to the audit log."""
+    try:
+        payload_str = json.dumps(payload or {}, default=str)
+        prev_hash = await _get_last_hash(db)
+        this_hash = _compute_hash(prev_hash, payload_str)
+
+        entry = AuditLog(
+            id=str(uuid.uuid4()),
+            event_type=event_type,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            payload=payload_str,
+            ip_address=ip_address,
+            prev_hash=prev_hash,
+            this_hash=this_hash,
+            created_at=datetime.utcnow(),
         )
-    )
-    for rt in result.scalars().all():
-        rt.revoked = True
-    await db.commit()
-
-    await log_event(db, AuditEvent.LOGOUT,
-                    actor_id=current_worker.id,
-                    actor_role="worker",
-                    ip_address=request.client.host)
-
-    return {"logged_out": True}
+        db.add(entry)
+        await db.commit()
+    except Exception as e:
+        print(f"[AuditLog] Failed to log {event_type}: {e}")
 
 
-# ─── Set password ─────────────────────────────────────────────────────────────
-@router.post("/worker/set-password")
-@limiter.limit("10/minute")
-async def set_password(request: Request, data: SetPassword, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Worker).where(Worker.id == data.worker_id))
-    worker = result.scalar()
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
-    worker.password_hash = hash_password(data.password)
-    await db.commit()
-    await log_event(db, AuditEvent.PASSWORD_CHANGED,
-                    actor_id=worker.id, actor_role="worker",
-                    ip_address=request.client.host)
-    return {"success": True}
+async def verify_chain(db: AsyncSession) -> dict:
+    """Verify the integrity of the entire audit log chain."""
+    result = await db.execute(select(AuditLog).order_by(AuditLog.created_at.asc()))
+    entries = result.scalars().all()
 
+    if not entries:
+        return {"intact": True, "entries": 0, "broken_at": None}
 
-# ─── HR login ─────────────────────────────────────────────────────────────────
-@router.post("/hr/login")
-@limiter.limit("5/minute")
-async def hr_login(request: Request, data: HRLogin, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(HRCompany).where(HRCompany.contact_email == data.email))
-    company = result.scalar()
+    prev_hash = "GENESIS"
+    for i, entry in enumerate(entries):
+        expected = _compute_hash(prev_hash, entry.payload)
+        if entry.this_hash != expected:
+            return {
+                "intact": False,
+                "entries": len(entries),
+                "broken_at": i,
+                "entry_id": entry.id
+            }
+        prev_hash = entry.this_hash
 
-    dummy = "$2b$12$dummyhashtopreventtimingattacks1234567890123456"
-    stored = company.password_hash if (company and company.password_hash) else dummy
-    valid = verify_password(data.password, stored) if (company and company.password_hash) else False
-
-    if not company or not valid:
-        await log_event(db, AuditEvent.LOGIN_FAILED,
-                        payload={"email": data.email, "role": "hr"},
-                        ip_address=request.client.host)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    access_token = create_access_token(subject=company.id, role="hr")
-    refresh_token = create_refresh_token(subject=company.id, role="hr")
-    refresh_payload = decode_token(refresh_token)
-
-    rt = RefreshToken(
-        id=refresh_payload["jti"],
-        hr_id=company.id,
-        role="hr",
-        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-        ip_address=request.client.host,
-    )
-    db.add(rt)
-    await db.commit()
-
-    await log_event(db, AuditEvent.LOGIN_SUCCESS,
-                    actor_id=company.id, actor_role="hr",
-                    ip_address=request.client.host)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "expires_in": 900,
-        "company": company,
-    }
+    return {"intact": True, "entries": len(entries), "broken_at": None}

@@ -47,10 +47,10 @@ export default function Employers() {
   const [viewMode, setViewMode] = useState('matched');
 
   useEffect(() => {
-    employerAPI.list().then(r => setEmployers(r.data)).catch(() => { });
+    employerAPI.list().then(r => setEmployers(r.data)).catch(() => {});
     if (worker) {
-      employerAPI.bookings(worker.id).then(r => setBookings(r.data)).catch(() => { });
-      employerAPI.match(worker.id).then(r => setMatchedEmployers(r.data)).catch(() => { });
+      employerAPI.bookings(worker.id).then(r => setBookings(r.data)).catch(() => {});
+      employerAPI.match(worker.id).then(r => setMatchedEmployers(r.data)).catch(() => {});
     }
   }, [worker]);
 

@@ -12,8 +12,8 @@ export default function GigMarketplace() {
   const [weeksPerMonth, setWeeksPerMonth] = useState(4);
 
   useEffect(() => {
-    gigAPI.list().then(r => setGigs(r.data)).catch(() => { });
-    signalAPI.list().then(r => setSignals(r.data)).catch(() => { });
+    gigAPI.list().then(r => setGigs(r.data)).catch(() => {});
+    signalAPI.list().then(r => setSignals(r.data)).catch(() => {});
   }, []);
 
   // Compute skill match score for each gig against the worker's skills
@@ -35,8 +35,8 @@ export default function GigMarketplace() {
   });
 
   const filtered = filter === 'remote' ? scoredGigs.filter(g => g.remote)
-    : filter === 'onsite' ? scoredGigs.filter(g => !g.remote)
-      : scoredGigs;
+                 : filter === 'onsite' ? scoredGigs.filter(g => !g.remote)
+                 : scoredGigs;
 
   const sorted = [...filtered].sort((a, b) => {
     if (sortBy === 'match') return b.matchScore - a.matchScore;

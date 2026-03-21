@@ -22,8 +22,8 @@ function AnimatedStat({ value, suffix = '', prefix = '', label, start }) {
   const numeric = parseInt(value.replace(/[^0-9]/g, '')) || 0;
   const count = useCountUp(numeric, 1800, start);
   const display = value.includes('+') ? `+${prefix}${count.toLocaleString()}${suffix}` :
-    value.includes('<') ? `< ${prefix}${count.toLocaleString()}${suffix}` :
-      `${prefix}${count.toLocaleString()}${suffix}`;
+                  value.includes('<') ? `< ${prefix}${count.toLocaleString()}${suffix}` :
+                  `${prefix}${count.toLocaleString()}${suffix}`;
   return (
     <div style={{ textAlign: 'center' }}>
       <div style={{ fontSize: 40, fontWeight: 800, color: '#1F4D8C', letterSpacing: '-1px' }}>{display}</div>

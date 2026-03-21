@@ -25,9 +25,9 @@ export default function Signal() {
   const [roiSkill, setRoiSkill] = useState('');
 
   useEffect(() => {
-    signalAPI.list().then(r => setSignals(r.data)).catch(() => { });
+    signalAPI.list().then(r => setSignals(r.data)).catch(() => {});
     fetch(`${process.env.REACT_APP_API_URL || ''}/api/signal/summary`)
-      .then(r => r.json()).then(setSummary).catch(() => { });
+      .then(r => r.json()).then(setSummary).catch(() => {});
   }, []);
 
   const categories = ['All', ...new Set(signals.map(s => s.category).filter(Boolean))];

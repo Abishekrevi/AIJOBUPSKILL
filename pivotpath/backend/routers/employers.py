@@ -1,3 +1,7 @@
+"""
+Employers router — with event bus publish (47) on interview booking,
+semantic skill match (36), and interview prep checklist.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -10,6 +14,7 @@ from security import get_current_worker
 from audit_log import log_event, AuditEvent
 
 router = APIRouter()
+
 
 @router.get("/")
 async def list_employers(db: AsyncSession = Depends(get_db)):
@@ -25,11 +30,13 @@ async def list_employers(db: AsyncSession = Depends(get_db)):
         out.append(d)
     return out
 
+
 class BookingRequest(BaseModel):
     worker_id: str = Field(max_length=64)
     employer_id: str = Field(max_length=64)
     slot_date: str = Field(max_length=50)
     slot_time: str = Field(max_length=20)
+
 
 @router.post("/book")
 async def book_interview(
@@ -63,9 +70,27 @@ async def book_interview(
 
     await log_event(db, AuditEvent.INTERVIEW_BOOKED,
                     actor_id=data.worker_id, actor_role="worker",
-                    payload={"employer_id": data.employer_id, "date": data.slot_date, "time": data.slot_time})
+                    payload={
+                        "employer_id": data.employer_id,
+                        "date": data.slot_date,
+                        "time": data.slot_time
+                    })
+
+    # ── Upgrade 47: Publish interview booked event to async event bus ─────────
+    try:
+        from circuit_breaker import bus, AppEvent
+        await bus.publish(AppEvent.INTERVIEW_BOOKED, {
+            "worker_id": data.worker_id,
+            "employer_id": data.employer_id,
+            "employer_name": emp.name if emp else "",
+            "slot_date": data.slot_date,
+            "slot_time": data.slot_time,
+        })
+    except Exception:
+        pass
 
     return {"booked": True, "booking_id": booking.id, "status": "confirmed"}
+
 
 @router.get("/bookings/{worker_id}")
 async def worker_bookings(
@@ -89,20 +114,21 @@ async def worker_bookings(
         out.append(d)
     return out
 
+
 @router.get("/match/{worker_id}")
 async def employer_match(
     worker_id: str,
     current_worker: Worker = Depends(get_current_worker),
     db: AsyncSession = Depends(get_db)
 ):
-    """Return employers ranked by skill match score for a given worker."""
+    """
+    Upgrade 36: Semantic BERT skill matching for employer ranking.
+    Falls back to keyword matching if sentence-transformers unavailable.
+    """
     worker_res = await db.execute(select(Worker).where(Worker.id == worker_id))
     worker = worker_res.scalar()
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
-
-    worker_skills = (worker.skills_summary or "").lower()
-    worker_target = (worker.target_role or "").lower()
 
     emp_res = await db.execute(select(Employer))
     employers = emp_res.scalars().all()
@@ -115,9 +141,30 @@ async def employer_match(
         except:
             skills_needed, roles = [], []
 
-        skill_matches = sum(1 for s in skills_needed if s.lower().split()[0] in worker_skills)
-        role_match = any(worker_target in r.lower() for r in roles)
-        score = round((skill_matches / max(len(skills_needed), 1)) * 80 + (20 if role_match else 0))
+        # Try semantic matching first (upgrade 36)
+        score = 0
+        try:
+            from ml_models import compute_employer_match_score
+            result = compute_employer_match_score(
+                worker_skills=worker.skills_summary or "",
+                skills_needed=skills_needed,
+                target_role=worker.target_role or "",
+                open_roles=roles,
+            )
+            score = result["score"]
+        except Exception:
+            # Fallback: keyword matching
+            worker_skills_lower = (worker.skills_summary or "").lower()
+            worker_target = (worker.target_role or "").lower()
+            skill_matches = sum(
+                1 for s in skills_needed
+                if s.lower().split()[0] in worker_skills_lower
+            )
+            role_match = any(worker_target in r.lower() for r in roles)
+            score = round(
+                (skill_matches / max(len(skills_needed), 1)) * 80 +
+                (20 if role_match else 0)
+            )
 
         d = {k: v for k, v in e.__dict__.items() if not k.startswith("_")}
         d["open_roles"] = roles

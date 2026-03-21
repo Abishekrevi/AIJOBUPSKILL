@@ -5,7 +5,6 @@ const WS_BASE = BASE.replace('https://', 'wss://').replace('http://', 'ws://');
 
 const api = axios.create({ baseURL: BASE });
 
-// ─── Token helpers ────────────────────────────────────────────────────────────
 const getAccessToken = () => localStorage.getItem('pp_token');
 const getRefreshToken = () => localStorage.getItem('pp_refresh_token');
 const setTokens = (access, refresh) => {
@@ -19,22 +18,16 @@ const clearTokens = () => {
   localStorage.removeItem('pp_hr');
 };
 
-// ─── Request interceptor — attach access token ────────────────────────────────
 api.interceptors.request.use((config) => {
   const token = getAccessToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// ─── Response interceptor — auto-refresh on 401 ──────────────────────────────
 let isRefreshing = false;
 let failedQueue = [];
-
 const processQueue = (error, token = null) => {
-  failedQueue.forEach(prom => {
-    if (error) prom.reject(error);
-    else prom.resolve(token);
-  });
+  failedQueue.forEach(p => error ? p.reject(error) : p.resolve(token));
   failedQueue = [];
 };
 
@@ -42,86 +35,50 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-
-    // Upgrade 2: Auto-refresh on 401
     if (error.response?.status === 401 && !originalRequest._retry) {
       const refreshToken = getRefreshToken();
-
-      if (!refreshToken) {
-        clearTokens();
-        window.location.href = '/login';
-        return Promise.reject(error);
-      }
-
+      if (!refreshToken) { clearTokens(); window.location.href = '/login'; return Promise.reject(error); }
       if (isRefreshing) {
-        // Queue requests while refreshing
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        }).then(token => {
-          originalRequest.headers.Authorization = `Bearer ${token}`;
-          return api(originalRequest);
-        });
+        return new Promise((resolve, reject) => { failedQueue.push({ resolve, reject }); })
+          .then(token => { originalRequest.headers.Authorization = `Bearer ${token}`; return api(originalRequest); });
       }
-
       originalRequest._retry = true;
       isRefreshing = true;
-
       try {
-        const res = await axios.post(`${BASE}/api/auth/refresh`, {
-          refresh_token: refreshToken
-        });
+        const res = await axios.post(`${BASE}/api/auth/refresh`, { refresh_token: refreshToken });
         const { access_token, refresh_token: new_refresh } = res.data;
         setTokens(access_token, new_refresh);
         processQueue(null, access_token);
         originalRequest.headers.Authorization = `Bearer ${access_token}`;
         return api(originalRequest);
-      } catch (refreshError) {
-        processQueue(refreshError, null);
+      } catch (e) {
+        processQueue(e, null);
         clearTokens();
         window.location.href = '/login';
-        return Promise.reject(refreshError);
-      } finally {
-        isRefreshing = false;
-      }
+        return Promise.reject(e);
+      } finally { isRefreshing = false; }
     }
-
     return Promise.reject(error);
   }
 );
 
-// ─── WebSocket Notifications ──────────────────────────────────────────────────
+// ─── WebSocket ────────────────────────────────────────────────────────────────
 let ws = null;
 let wsCallbacks = [];
-
 export const connectNotifications = (workerId, onMessage) => {
   if (ws) ws.close();
   ws = new WebSocket(`${WS_BASE}/ws/${workerId}`);
   wsCallbacks.push(onMessage);
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      wsCallbacks.forEach(cb => cb(data));
-    } catch (e) { }
-  };
-  ws.onclose = () => {
-    setTimeout(() => { if (workerId) connectNotifications(workerId, onMessage); }, 3000);
-  };
-  const pingInterval = setInterval(() => {
-    if (ws?.readyState === WebSocket.OPEN) ws.send('ping');
-    else clearInterval(pingInterval);
-  }, 30000);
+  ws.onmessage = (e) => { try { const d = JSON.parse(e.data); wsCallbacks.forEach(cb => cb(d)); } catch {} };
+  ws.onclose = () => { setTimeout(() => { if (workerId) connectNotifications(workerId, onMessage); }, 3000); };
+  setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.send('ping'); }, 30000);
 };
-
-export const disconnectNotifications = () => {
-  if (ws) { ws.close(); ws = null; }
-  wsCallbacks = [];
-};
+export const disconnectNotifications = () => { if (ws) { ws.close(); ws = null; } wsCallbacks = []; };
 
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 export const authAPI = {
   workerLogin: async (email, password) => {
     const res = await api.post('/api/auth/worker/login', { email, password });
-    // Upgrade 2: store both access + refresh tokens
     setTokens(res.data.access_token, res.data.refresh_token);
     return res;
   },
@@ -130,17 +87,10 @@ export const authAPI = {
     setTokens(res.data.access_token, res.data.refresh_token);
     return res;
   },
-  setPassword: (worker_id, password) =>
-    api.post('/api/auth/worker/set-password', { worker_id, password }),
-  // Upgrade 1: server-side token blacklist logout
+  setPassword: (worker_id, password) => api.post('/api/auth/worker/set-password', { worker_id, password }),
   logout: async () => {
-    try {
-      await api.post('/api/auth/logout');
-    } catch (e) {
-      // Continue with local cleanup even if server call fails
-    }
-    clearTokens();
-    disconnectNotifications();
+    try { await api.post('/api/auth/logout'); } catch {}
+    clearTokens(); disconnectNotifications();
   },
 };
 
@@ -166,19 +116,24 @@ export const coachAPI = {
 // ─── Credential API ───────────────────────────────────────────────────────────
 export const credentialAPI = {
   list: () => api.get('/api/credentials/'),
-  enroll: (worker_id, credential_id) =>
-    api.post('/api/credentials/enroll', { worker_id, credential_id }),
+  search: (q) => api.get(`/api/credentials/search?q=${encodeURIComponent(q)}`),
+  ranked: (top_n = 5) => api.get(`/api/credentials/ranked?top_n=${top_n}`),
+  enroll: (worker_id, credential_id) => api.post('/api/credentials/enroll', { worker_id, credential_id }),
   updateProgress: (enrollment_id, progress_pct) =>
     api.patch(`/api/credentials/enrollment/${enrollment_id}/progress`, { progress_pct }),
   workerCredentials: (worker_id) => api.get(`/api/credentials/worker/${worker_id}`),
   recommended: (worker_id) => api.get(`/api/credentials/recommended/${worker_id}`),
+  dsaStats: () => api.get('/api/credentials/dsa-stats'),
 };
 
 // ─── Signal API ───────────────────────────────────────────────────────────────
 export const signalAPI = {
-  list: () => api.get('/api/signal/'),
+  list: (category) => api.get(`/api/signal/${category ? `?category=${category}` : ''}`),
   top: (limit = 5) => api.get(`/api/signal/top?limit=${limit}`),
   summary: () => api.get('/api/signal/summary'),
+  rangeAnalytics: (from_idx, to_idx) =>
+    api.get(`/api/signal/range-analytics?from_idx=${from_idx}&to_idx=${to_idx}`),
+  cacheStats: () => api.get('/api/signal/cache-stats'),
 };
 
 // ─── Employer API ─────────────────────────────────────────────────────────────
@@ -203,6 +158,42 @@ export const hrAPI = {
 // ─── Gig API ──────────────────────────────────────────────────────────────────
 export const gigAPI = {
   list: () => api.get('/api/gigs/'),
+};
+
+// ─── ML API (upgrades 36-43) ──────────────────────────────────────────────────
+export const mlAPI = {
+  // Upgrade 36: Semantic skill match
+  skillMatch: (worker_id, employer_id) =>
+    api.get(`/api/ml/skill-match/${worker_id}/${employer_id}`),
+
+  // Upgrade 37: Demand forecasting
+  forecastSkill: (skill_name, weeks = 26) =>
+    api.get(`/api/ml/forecast/${encodeURIComponent(skill_name)}?weeks=${weeks}`),
+  forecastAll: () => api.get('/api/ml/forecast-all'),
+
+  // Upgrade 39: UCB bandit recommendations
+  banditRecommend: (worker_id, n = 3) =>
+    api.get(`/api/ml/bandit/recommend/${worker_id}?n=${n}`),
+  banditFeedback: (credential_id, outcome) =>
+    api.post('/api/ml/bandit/feedback', { credential_id, outcome }),
+  banditStats: () => api.get('/api/ml/bandit/stats'),
+
+  // Upgrade 40: SHAP explainability
+  explainDropout: (worker_id) => api.get(`/api/ml/explain-dropout/${worker_id}`),
+
+  // Upgrade 42: Neural salary prediction
+  predictSalary: (worker_id) => api.get(`/api/ml/salary-predict/${worker_id}`),
+
+  // Upgrade 38: Federated learning
+  submitFederated: () => api.post('/api/ml/federated/submit'),
+  aggregateFederated: () => api.post('/api/ml/federated/aggregate'),
+
+  // Upgrade 43: Bias audit
+  biasAudit: () => api.get('/api/ml/bias-audit'),
+
+  // Autocomplete (Upgrade 27: Trie)
+  autocompleteSkills: (q) => api.get(`/api/autocomplete/skills?q=${encodeURIComponent(q)}`),
+  autocompleteRoles: (q) => api.get(`/api/autocomplete/roles?q=${encodeURIComponent(q)}`),
 };
 
 export default api;

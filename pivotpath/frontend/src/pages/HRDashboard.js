@@ -16,12 +16,12 @@ export default function HRDashboard() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    hrAPI.dashboard().then(r => setStats(r.data)).catch(() => { });
-    workerAPI.list().then(r => setWorkers(r.data)).catch(() => { });
-    hrAPI.companies().then(r => setCompanies(r.data)).catch(() => { });
-    hrAPI.cohortAnalytics().then(r => setCohorts(r.data?.cohorts || [])).catch(() => { });
-    hrAPI.dropoutRisk().then(r => setDropoutRisk(r.data)).catch(() => { });
-    hrAPI.interviewQueue().then(r => setInterviewQueue(r.data)).catch(() => { });
+    hrAPI.dashboard().then(r => setStats(r.data)).catch(() => {});
+    workerAPI.list().then(r => setWorkers(r.data)).catch(() => {});
+    hrAPI.companies().then(r => setCompanies(r.data)).catch(() => {});
+    hrAPI.cohortAnalytics().then(r => setCohorts(r.data?.cohorts || [])).catch(() => {});
+    hrAPI.dropoutRisk().then(r => setDropoutRisk(r.data)).catch(() => {});
+    hrAPI.interviewQueue().then(r => setInterviewQueue(r.data)).catch(() => {});
   }, []);
 
   const statusColors = { onboarding: '#D97706', active: '#2B5FAA', learning: '#2D9B6F', placed: '#059669', paused: '#9CA3AF' };
