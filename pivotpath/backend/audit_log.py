@@ -17,6 +17,8 @@ from database import Base
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = {"extend_existing": True}
+
     id = Column(String, primary_key=True)
     event_type = Column(String, nullable=False)
     actor_id = Column(String, nullable=True)
