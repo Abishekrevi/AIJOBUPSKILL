@@ -5,28 +5,91 @@ const WS_BASE = BASE.replace('https://', 'wss://').replace('http://', 'ws://');
 
 const api = axios.create({ baseURL: BASE });
 
-// Attach JWT token to every request automatically
+// ─── Token helpers ────────────────────────────────────────────────────────────
+const getAccessToken = () => localStorage.getItem('pp_token');
+const getRefreshToken = () => localStorage.getItem('pp_refresh_token');
+const setTokens = (access, refresh) => {
+  localStorage.setItem('pp_token', access);
+  if (refresh) localStorage.setItem('pp_refresh_token', refresh);
+};
+const clearTokens = () => {
+  localStorage.removeItem('pp_token');
+  localStorage.removeItem('pp_refresh_token');
+  localStorage.removeItem('pp_worker');
+  localStorage.removeItem('pp_hr');
+};
+
+// ─── Request interceptor — attach access token ────────────────────────────────
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('pp_token');
+  const token = getAccessToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Auto logout on 401
+// ─── Response interceptor — auto-refresh on 401 ──────────────────────────────
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach(prom => {
+    if (error) prom.reject(error);
+    else prom.resolve(token);
+  });
+  failedQueue = [];
+};
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('pp_token');
-      localStorage.removeItem('pp_worker');
-      localStorage.removeItem('pp_hr');
-      window.location.href = '/login';
+  async (error) => {
+    const originalRequest = error.config;
+
+    // Upgrade 2: Auto-refresh on 401
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      const refreshToken = getRefreshToken();
+
+      if (!refreshToken) {
+        clearTokens();
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      if (isRefreshing) {
+        // Queue requests while refreshing
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        }).then(token => {
+          originalRequest.headers.Authorization = `Bearer ${token}`;
+          return api(originalRequest);
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      try {
+        const res = await axios.post(`${BASE}/api/auth/refresh`, {
+          refresh_token: refreshToken
+        });
+        const { access_token, refresh_token: new_refresh } = res.data;
+        setTokens(access_token, new_refresh);
+        processQueue(null, access_token);
+        originalRequest.headers.Authorization = `Bearer ${access_token}`;
+        return api(originalRequest);
+      } catch (refreshError) {
+        processQueue(refreshError, null);
+        clearTokens();
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
+      }
     }
+
     return Promise.reject(error);
   }
 );
 
-// ─── WebSocket Notifications ─────────────────────────────────────────────────
+// ─── WebSocket Notifications ──────────────────────────────────────────────────
 let ws = null;
 let wsCallbacks = [];
 
@@ -34,22 +97,15 @@ export const connectNotifications = (workerId, onMessage) => {
   if (ws) ws.close();
   ws = new WebSocket(`${WS_BASE}/ws/${workerId}`);
   wsCallbacks.push(onMessage);
-
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
       wsCallbacks.forEach(cb => cb(data));
     } catch (e) { }
   };
-
   ws.onclose = () => {
-    // Auto-reconnect after 3 seconds
-    setTimeout(() => {
-      if (workerId) connectNotifications(workerId, onMessage);
-    }, 3000);
+    setTimeout(() => { if (workerId) connectNotifications(workerId, onMessage); }, 3000);
   };
-
-  // Keep-alive ping every 30 seconds
   const pingInterval = setInterval(() => {
     if (ws?.readyState === WebSocket.OPEN) ws.send('ping');
     else clearInterval(pingInterval);
@@ -63,24 +119,29 @@ export const disconnectNotifications = () => {
 
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 export const authAPI = {
-  workerLogin: (email, password) =>
-    api.post('/api/auth/worker/login', { email, password }).then(res => {
-      localStorage.setItem('pp_token', res.data.token);
-      return res;
-    }),
-  hrLogin: (email, password) =>
-    api.post('/api/auth/hr/login', { email, password }).then(res => {
-      localStorage.setItem('pp_token', res.data.token);
-      return res;
-    }),
+  workerLogin: async (email, password) => {
+    const res = await api.post('/api/auth/worker/login', { email, password });
+    // Upgrade 2: store both access + refresh tokens
+    setTokens(res.data.access_token, res.data.refresh_token);
+    return res;
+  },
+  hrLogin: async (email, password) => {
+    const res = await api.post('/api/auth/hr/login', { email, password });
+    setTokens(res.data.access_token, res.data.refresh_token);
+    return res;
+  },
   setPassword: (worker_id, password) =>
     api.post('/api/auth/worker/set-password', { worker_id, password }),
-  logout: () => {
-    localStorage.removeItem('pp_token');
-    localStorage.removeItem('pp_worker');
-    localStorage.removeItem('pp_hr');
+  // Upgrade 1: server-side token blacklist logout
+  logout: async () => {
+    try {
+      await api.post('/api/auth/logout');
+    } catch (e) {
+      // Continue with local cleanup even if server call fails
+    }
+    clearTokens();
     disconnectNotifications();
-  }
+  },
 };
 
 // ─── Worker API ───────────────────────────────────────────────────────────────
@@ -117,6 +178,7 @@ export const credentialAPI = {
 export const signalAPI = {
   list: () => api.get('/api/signal/'),
   top: (limit = 5) => api.get(`/api/signal/top?limit=${limit}`),
+  summary: () => api.get('/api/signal/summary'),
 };
 
 // ─── Employer API ─────────────────────────────────────────────────────────────
@@ -124,6 +186,7 @@ export const employerAPI = {
   list: () => api.get('/api/employers/'),
   book: (data) => api.post('/api/employers/book', data),
   bookings: (worker_id) => api.get(`/api/employers/bookings/${worker_id}`),
+  match: (worker_id) => api.get(`/api/employers/match/${worker_id}`),
 };
 
 // ─── HR API ───────────────────────────────────────────────────────────────────

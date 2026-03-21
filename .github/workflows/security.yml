@@ -1,0 +1,93 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dependency-audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit and safety
+        run: pip install pip-audit safety
+
+      - name: Run pip-audit (CVE check)
+        run: |
+          pip-audit -r pivotpath/backend/requirements.txt \
+            --format json \
+            --output audit-report.json || true
+          pip-audit -r pivotpath/backend/requirements.txt
+        # Fails CI on CRITICAL or HIGH CVEs
+
+      - name: Run safety check
+        run: |
+          safety check -r pivotpath/backend/requirements.txt \
+            --json > safety-report.json || true
+          safety check -r pivotpath/backend/requirements.txt
+        continue-on-error: true
+
+      - name: Upload audit reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            audit-report.json
+            safety-report.json
+
+  secret-scan:
+    name: Secret leak detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks (secret scanner)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Blocks merge if API keys, passwords, or tokens found in code
+
+  code-quality:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bandit (Python security linter)
+        run: pip install bandit
+
+      - name: Run bandit security scan
+        run: |
+          bandit -r pivotpath/backend/ \
+            -x pivotpath/backend/.venv \
+            --severity-level medium \
+            --confidence-level medium \
+            -f json -o bandit-report.json || true
+          bandit -r pivotpath/backend/ \
+            -x pivotpath/backend/.venv \
+            --severity-level high
+        # Fails on HIGH severity findings (hardcoded passwords, SQL injection, etc.)
+
+      - name: Upload bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json

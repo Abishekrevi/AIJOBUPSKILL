@@ -10,7 +10,14 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://") and "asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
@@ -44,6 +51,19 @@ class HRCompany(Base):
     workers_enrolled = Column(Integer, default=0)
     contract_value = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ─── Upgrade 2: Refresh token storage ───────────────────────────────────────
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id = Column(String, primary_key=True)       # jti
+    worker_id = Column(String, nullable=True)
+    hr_id = Column(String, nullable=True)
+    role = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    ip_address = Column(String, nullable=True)
 
 
 class SkillSignal(Base):
