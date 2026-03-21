@@ -1,39 +1,54 @@
-from fastapi import APIRouter, Depends
+"""
+Audit Router — exposes audit log endpoints.
+"""
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from database import get_db, AuditLog
-from audit_log import verify_chain
-from security import get_current_worker
-from database import Worker
+from database import get_db
+from audit_log import AuditLog, verify_chain
 
 router = APIRouter()
 
+
 @router.get("/logs")
 async def get_audit_logs(
-    current_worker: Worker = Depends(get_current_worker),
-    db: AsyncSession = Depends(get_db)
+    limit: int = 100,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
 ):
+    """Return the most recent audit log entries."""
     result = await db.execute(
-        select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)
+        select(AuditLog)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
-    logs = result.scalars().all()
+    entries = result.scalars().all()
     return [
         {
-            "id": l.id,
-            "event_type": l.event_type,
-            "actor_id": l.actor_id,
-            "actor_role": l.actor_role,
-            "ip_address": l.ip_address,
-            "created_at": l.created_at.isoformat() if l.created_at else None,
-            "this_hash": l.this_hash,
+            "id": e.id,
+            "event_type": e.event_type,
+            "actor_id": e.actor_id,
+            "actor_role": e.actor_role,
+            "payload": e.payload,
+            "ip_address": e.ip_address,
+            "prev_hash": e.prev_hash,
+            "this_hash": e.this_hash,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
         }
-        for l in logs
+        for e in entries
     ]
 
+
 @router.get("/verify")
-async def verify_audit_chain(
-    current_worker: Worker = Depends(get_current_worker),
-    db: AsyncSession = Depends(get_db)
-):
-    return await verify_chain(db)
+async def verify_audit_chain(db: AsyncSession = Depends(get_db)):
+    """Verify the integrity of the entire audit log chain."""
+    result = await verify_chain(db)
+    if not result["intact"]:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Audit chain integrity broken at entry {result['broken_at']} "
+                   f"(id: {result.get('entry_id')})",
+        )
+    return result
