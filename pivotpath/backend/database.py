@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Boolean, ForeignKey
 from datetime import datetime
-import enum
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./pivotpath.db")
 if DATABASE_URL.startswith("postgres://"):
@@ -14,6 +13,7 @@ elif DATABASE_URL.startswith("postgresql://") and "asyncpg" not in DATABASE_URL:
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
+
 
 class Worker(Base):
     __tablename__ = "workers"
@@ -32,6 +32,7 @@ class Worker(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     hr_company_id = Column(String, ForeignKey("hr_companies.id"), nullable=True)
 
+
 class HRCompany(Base):
     __tablename__ = "hr_companies"
     id = Column(String, primary_key=True)
@@ -44,6 +45,7 @@ class HRCompany(Base):
     contract_value = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class SkillSignal(Base):
     __tablename__ = "skill_signals"
     id = Column(String, primary_key=True)
@@ -54,6 +56,7 @@ class SkillSignal(Base):
     avg_salary_uplift = Column(Float)
     top_employers = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
 
 class Credential(Base):
     __tablename__ = "credentials"
@@ -68,6 +71,7 @@ class Credential(Base):
     placement_rate = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class WorkerCredential(Base):
     __tablename__ = "worker_credentials"
     id = Column(String, primary_key=True)
@@ -78,6 +82,7 @@ class WorkerCredential(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
+
 class CoachSession(Base):
     __tablename__ = "coach_sessions"
     id = Column(String, primary_key=True)
@@ -85,6 +90,7 @@ class CoachSession(Base):
     message = Column(Text)
     response = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class Employer(Base):
     __tablename__ = "employers"
@@ -96,6 +102,7 @@ class Employer(Base):
     interview_slots = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class InterviewBooking(Base):
     __tablename__ = "interview_bookings"
     id = Column(String, primary_key=True)
@@ -105,6 +112,7 @@ class InterviewBooking(Base):
     slot_time = Column(String)
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class GigPost(Base):
     __tablename__ = "gig_posts"
@@ -117,14 +125,30 @@ class GigPost(Base):
     remote = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(String, primary_key=True)
+    event_type = Column(String, nullable=False)
+    actor_id = Column(String, nullable=True)
+    actor_role = Column(String, nullable=True)
+    payload = Column(Text, nullable=True)
+    ip_address = Column(String, nullable=True)
+    prev_hash = Column(String, nullable=False)
+    this_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
+
 
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await seed_data()
+
 
 async def seed_data():
     import json, uuid
